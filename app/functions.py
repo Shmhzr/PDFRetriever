@@ -1,257 +1,477 @@
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import Chroma
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
-
 import os
-import tempfile
 import uuid
+import json
+import sqlite3
 import pandas as pd
+from pathlib import Path
+from io import BytesIO
+
+import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from pydantic import BaseModel, Field
 import re
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import bcrypt
+from sqlalchemy import create_engine, Column, String, Integer, JSON, ForeignKey, DateTime, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import datetime
+
+# Global configuration
+GEMINI_MODEL_NAME = "gemini-2.0-flash" 
+
+# --- PostgreSQL Setup ---
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+
+class Chat(Base):
+    __tablename__ = 'chats'
+    id = Column(String(255), primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    title = Column(String(255))
+    file_name = Column(String(255))
+    history = Column(JSON) # Stores chat history as JSONB
+    processed_data = Column(JSON) # Stores parsed doc structure
+    pdf_b64 = Column(Text) # Optional: Store B64 of PDF for restoration
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+class TableData(Base):
+    __tablename__ = 'extracted_tables'
+    id = Column(String(255), primary_key=True)
+    file_name = Column(String(255))
+    user_id = Column(Integer, ForeignKey('users.id'))
+    page = Column(Integer)
+    caption = Column(String(512))
+    data_json = Column(JSON)
+
+def get_db_engine():
+    pg_host = os.getenv("PGHOST")
+    
+    if pg_host:
+        pg_port = os.getenv("PGPORT", "5432")
+        pg_db = os.getenv("PGDATABASE", "pdf_retriever")
+        pg_user = os.getenv("PGUSER", "postgres")
+        pg_pass = os.getenv("PGPASSWORD", "your_password")
+        db_url = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+    else:
+        # Fallback to local SQLite for easier project submission
+        db_path = Path("db") / "intel_unnati.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db_url = f"sqlite:///{db_path}"
+    
+    return create_engine(db_url)
+
+def init_db():
+    engine = get_db_engine()
+    Base.metadata.create_all(engine)
+
+def get_db_session():
+    engine = get_db_engine()
+    Session = sessionmaker(bind=engine)
+    return Session()
+
+# --- Authentication Logic ---
+def register_user(username, password):
+    session = get_db_session()
+    try:
+        if session.query(User).filter_by(username=username).first():
+            return False, "User already exists"
+        
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        new_user = User(username=username, password_hash=hashed)
+        session.add(new_user)
+        session.commit()
+        return True, "Registration successful"
+    except Exception as e:
+        session.rollback()
+        return False, str(e)
+    finally:
+        session.close()
+
+def verify_user(username, password):
+    session = get_db_session()
+    try:
+        user = session.query(User).filter_by(username=username).first()
+        if user and bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
+            return user
+        return None
+    finally:
+        session.close()
 
 def clean_filename(filename):
     """
-    Remove "(number)" pattern from a filename 
-    (because this could cause error when used as collection name when creating Chroma database).
-
-    Parameters:
-        filename (str): The filename to clean
-
-    Returns:
-        str: The cleaned filename
+    Strictly follows ChromaDB collection name rules:
+    - 3-512 characters.
+    - Contains [a-zA-Z0-9._-].
+    - Starts and ends with [a-zA-Z0-9].
     """
-    # Regular expression to find "(number)" pattern
-    new_filename = re.sub(r'\s\(\d+\)', '', filename)
-    return new_filename
+    import re
+    # Replace any character not in [a-zA-Z0-9._-] with an underscore
+    cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    # Ensure it starts and ends with alphanumeric
+    cleaned = re.sub(r'^[^a-zA-Z0-9]+', '', cleaned)
+    cleaned = re.sub(r'[^a-zA-Z0-9]+$', '', cleaned)
+    
+    # Handle length constraints
+    if len(cleaned) < 3:
+        cleaned = f"col_{cleaned}" if cleaned else "default_collection"
+    
+    return cleaned[:512]
 
-def get_pdf_text(uploaded_file): 
-    """
-    Load a PDF document from an uploaded file and return it as a list of documents
+def get_gemini_client(api_key):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(GEMINI_MODEL_NAME)
 
-    Parameters:
-        uploaded_file (file-like object): The uploaded PDF file to load
-
-    Returns:
-        list: A list of documents created from the uploaded PDF file
-    """
+def _safe_json_load(text):
+    """Robustly extract and load JSON from a string."""
     try:
-        # Read file content
-        input_file = uploaded_file.read()
+        # Try direct load
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find JSON block
+        match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except:
+                pass
+        # Remove markdown code blocks
+        clean_text = re.sub(r'```json\s*|\s*```', '', text)
+        try:
+            return json.loads(clean_text)
+        except:
+            raise ValueError("Could not parse JSON from Gemini response.")
 
-        # Create a temporary file (PyPDFLoader requires a file path to read the PDF,
-        # it can't work directly with file-like objects or byte streams that we get from Streamlit's uploaded_file)
-        temp_file = tempfile.NamedTemporaryFile(delete=False)
-        temp_file.write(input_file)
-        temp_file.close()
+import pdfplumber
 
-        # load PDF document
-        loader = PyPDFLoader(temp_file.name)
-        documents = loader.load()
-
-        return documents
+def intelligent_pdf_parse(uploaded_file, api_key):
+    """
+    Optimized Hybrid Parse:
+    1. Extracts raw text locally (fast).
+    2. Uses Gemini only for complex structure (TOC, Tables, Media).
+    3. Handles OCR automatically if local extraction fails.
+    """
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        GEMINI_MODEL_NAME,
+        generation_config={"response_mime_type": "application/json"}
+    )
+    file_bytes = uploaded_file.getvalue()
     
+    # Fast local analysis with pdfplumber
+    local_pages = []
+    is_scanned = True
+    try:
+        with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                local_pages.append({"page": page.page_number, "text": text})
+                if len(text.strip()) > 50:
+                    is_scanned = False
+    except Exception as e:
+        print(f"Local parse failed: {e}")
+
+    # Prompt Gemini for the "Intelligent" parts
+    # If selectable, we don't ask for full content to save time.
+    # If scanned, we MUST ask for content as part of OCR.
+    schema = {
+      "toc": [ { "title": "string", "page_number": "integer" } ],
+      "section_definitions": [ { "title": "string", "page_start": "integer", "page_end": "integer" } ],
+      "tables": [ { "caption": "string", "cells": [["string"]], "page": "integer" } ],
+      "media": [ { "description": "string", "page": "integer" } ]
+    }
+    
+    if is_scanned:
+        schema["section_definitions"][0]["content"] = "string (full OCR text)"
+
+    prompt = f"""
+    Analyze this PDF. It is {'SCANNED (needs full OCR)' if is_scanned else 'SELECTABLE (native text available)'}.
+    Provide a structured JSON output with this precisely: {json.dumps(schema)}
+
+    Rules:
+    - Extract the official Table of Contents (TOC).
+    - Define logical section boundaries (e.g., Chapter 1: pages 1-5). DO NOT cut across chapters.
+    - Preserve document layout and hierarchy in your structural analysis.
+    - Extract all tables accurately as 2-dimensional arrays (rows/cells).
+    - Provide brief, searchable descriptions for all images, graphs, and charts.
+    {'- For "content", perform OCR and provide the full text of the section.' if is_scanned else '- Do NOT provide "content" for sections; I will use fast local extraction.'}
+    Return ONLY raw JSON.
+    """
+
+    response = model.generate_content([
+        prompt,
+        {"mime_type": "application/pdf", "data": file_bytes}
+    ])
+    
+    try:
+        gemini_data = _safe_json_load(response.text)
+        
+        sections = []
+        for defn in gemini_data.get("section_definitions", []):
+            start = defn.get("page_start", 1)
+            end = defn.get("page_end", start)
+            
+            if is_scanned:
+                # Use OCR text from Gemini
+                content = defn.get("content", "[OCR Failed]")
+            else:
+                # Use local text
+                content_parts = [p["text"] for p in local_pages if start <= p["page"] <= end]
+                content = "\n".join(content_parts)
+            
+            sections.append({
+                "title": defn["title"],
+                "content": content,
+                "page_range": f"{start}-{end}"
+            })
+        
+        return {
+            "toc": gemini_data.get("toc", []),
+            "sections": sections,
+            "tables": gemini_data.get("tables", []),
+            "media": gemini_data.get("media", [])
+        }
+    except Exception as e:
+        return {"error": f"Speed optimization failed: {str(e)}", "raw": response.text}
+
+def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db"):
+    """
+    Stores text in Vector Store, Tables in SQLite, and metadata for UI.
+    """
+    base_path = Path(db_root)
+    base_path.mkdir(parents=True, exist_ok=True)
+    
+    clean_name = clean_filename(file_name)
+    
+    # 1. Store Text Sections and Media Descriptions in Chroma
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
+    
+    documents = []
+    # Add sections
+    for section in parsed_data.get("sections", []):
+        if section["content"].strip():
+            doc = Document(
+                page_content=section["content"],
+                metadata={
+                    "source": file_name,
+                    "type": "section",
+                    "title": section.get("title", ""),
+                    "page_range": str(section.get("page_range", ""))
+                }
+            )
+            documents.append(doc)
+    
+    # Add media descriptions
+    for item in parsed_data.get("media", []):
+        doc = Document(
+            page_content=item["description"],
+            metadata={
+                "source": file_name,
+                "type": "media",
+                "page": item.get("page", "")
+            }
+        )
+        documents.append(doc)
+
+    if documents:
+        vectorstore = Chroma.from_documents(
+            documents=documents,
+            embedding=embeddings,
+            collection_name=clean_name,
+            persist_directory=str(base_path / "vectorstore")
+        )
+    else:
+        vectorstore = None
+
+    # 2. Store Tables in PostgreSQL
+    session = get_db_session()
+    try:
+        for table in parsed_data.get("tables", []):
+            table_id = str(uuid.uuid4())
+            data = table.get("cells") or table.get("data") or []
+            new_table = TableData(
+                id=table_id,
+                file_name=file_name,
+                user_id=user_id,
+                page=table.get("page"),
+                caption=table.get("caption"),
+                data_json=data
+            )
+            session.add(new_table)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print(f"Error storing tables in PG: {e}")
     finally:
-        # Ensure the temporary file is deleted when we're done with it
-        os.unlink(temp_file.name)
+        session.close()
 
-
-def split_document(documents, chunk_size, chunk_overlap):    
-    """
-    Function to split generic text into smaller chunks.
-    chunk_size: The desired maximum size of each chunk (default: 400)
-    chunk_overlap: The number of characters to overlap between consecutive chunks (default: 20).
-
-    Returns:
-        list: A list of smaller text chunks created from the generic text
-    """
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size,
-                                          chunk_overlap=chunk_overlap,
-                                          length_function=len,
-                                          separators=["\n\n", "\n", " "])
-    
-    return text_splitter.split_documents(documents)
-
+    return vectorstore, "postgresql"
 
 def get_embedding_function(api_key):
-    """
-    Return a GoogleGenerativeAIEmbeddings object, which creates vector embeddings from text
-    using the Gemini (Google Generative AI) API.
+    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
 
-    Parameters:
-        api_key (str): Your Google Gemini API key.
-
-    Returns:
-        GoogleGenerativeAIEmbeddings: A Gemini embeddings object for text embedding tasks.
-    """
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=api_key
+def load_vectorstore(file_name, api_key, db_root="db"):
+    base_path = Path(db_root)
+    clean_name = clean_filename(file_name)
+    embedding_function = get_embedding_function(api_key)
+    return Chroma(
+        persist_directory=str(base_path / "vectorstore"),
+        embedding_function=embedding_function,
+        collection_name=clean_name
     )
-    return embeddings
 
+# Structured response models for searching
+class SearchResult(BaseModel):
+    answer: str = Field(description="Direct answer to the user query based on the context.")
+    context_used: str = Field(description="Snippet of the context that specifically supports the answer.")
+    reasoning: str = Field(description="Logic used to arrive at the answer.")
 
-def create_vectorstore(chunks, embedding_function, file_name, vector_store_path="db"):
-
-    """
-    Create a vector store from a list of text chunks.
-
-    :param chunks: A list of generic text chunks
-    :param embedding_function: A function that takes a string and returns a vector
-    :param file_name: The name of the file to associate with the vector store
-    :param vector_store_path: The directory to store the vector store
-
-    :return: A Chroma vector store object
-    """
-
-    # Create a list of unique ids for each document based on the content
-    ids = [str(uuid.uuid5(uuid.NAMESPACE_DNS, doc.page_content)) for doc in chunks]
+def query_pdf(vectorstore, query, api_key):
+    """General RAG query against the vector store."""
+    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL_NAME, google_api_key=api_key)
     
-    # Ensure that only unique docs with unique ids are kept
-    unique_ids = set()
-    unique_chunks = []
+    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 5})
     
-    unique_chunks = [] 
-    for chunk, id in zip(chunks, ids):     
-        if id not in unique_ids:       
-            unique_ids.add(id)
-            unique_chunks.append(chunk)        
-
-    # Create a new Chroma database from the documents
-    vectorstore = Chroma.from_documents(documents=unique_chunks, 
-                                        collection_name=clean_filename(file_name),
-                                        embedding=embedding_function, 
-                                        ids=list(unique_ids), 
-                                        persist_directory = vector_store_path)
-
-    # The database should save automatically after we create it
-    # but we can also force it to save using the persist() method
-    vectorstore.persist()
+    prompt_template = ChatPromptTemplate.from_template("""
+    You are a helpful document assistant. Use the following context to answer the question.
+    If the context doesn't contain the answer, say you don't know based on the provided text.
     
-    return vectorstore
-
-
-def create_vectorstore_from_texts(documents, api_key, file_name):
+    Context: {context}
     
-    # Step 2 split the documents  
-    """
-    Create a vector store from a list of texts.
-
-    :param documents: A list of generic text documents
-    :param api_key: The OpenAI API key used to create the vector store
-    :param file_name: The name of the file to associate with the vector store
-
-    :return: A Chroma vector store object
-    """
-    docs = split_document(documents, chunk_size=1000, chunk_overlap=200)
+    Question: {question}
     
-    # Step 3 define embedding function
-    embedding_function = get_embedding_function(api_key)
+    Answer clearly and concisely.
+    """)
 
-    # Step 4 create a vector store  
-    vectorstore = create_vectorstore(docs, embedding_function, file_name)
-    
-    return vectorstore
-
-
-def load_vectorstore(file_name, api_key, vectorstore_path="db"):
-
-    """
-    Load a previously saved Chroma vector store from disk.
-
-    :param file_name: The name of the file to load (without the path)
-    :param api_key: The OpenAI API key used to create the vector store
-    :param vectorstore_path: The path to the directory where the vector store was saved (default: "db")
-    
-    :return: A Chroma vector store object
-    """
-    embedding_function = get_embedding_function(api_key)
-    return Chroma(persist_directory=vectorstore_path, 
-                  embedding_function=embedding_function, 
-                  collection_name=clean_filename(file_name))
-
-# Prompt template
-PROMPT_TEMPLATE = """
-You are an assistant for question-answering tasks.
-Use the following pieces of retrieved context to answer
-the question. If you don't know the answer, say that you
-don't know. DON'T MAKE UP ANYTHING.
-
-{context}
-
----
-
-Answer the question based on the above context: {question}
-"""
-
-class AnswerWithSources(BaseModel):
-    """An answer to the question, with sources and reasoning."""
-    answer: str = Field(description="Answer to question")
-    sources: str = Field(description="Full direct text chunk from the context used to answer the question")
-    reasoning: str = Field(description="Explain the reasoning of the answer based on the sources")
-    
-
-class ExtractedInfoWithSources(BaseModel):
-    """Extracted information about the research article"""
-    paper_title: AnswerWithSources
-    paper_summary: AnswerWithSources
-    publication_year: AnswerWithSources
-    paper_authors: AnswerWithSources
-
-def format_docs(docs):
-    """
-    Format a list of Document objects into a single string.
-
-    :param docs: A list of Document objects
-
-    :return: A string containing the text of all the documents joined by two newlines
-    """
-    return "\n\n".join(doc.page_content for doc in docs)
-
-# retriever | format_docs passes the question through the retriever, generating Document objects, and then to format_docs to generate strings;
-# RunnablePassthrough() passes through the input question unchanged.
-def query_document(vectorstore, query, api_key):
-
-    """
-    Query a vector store with a question and return a structured response.
-
-    :param vectorstore: A Chroma vector store object
-    :param query: The question to ask the vector store
-    :param api_key: The OpenAI API key to use when calling the OpenAI Embeddings API
-
-    :return: A pandas DataFrame with three rows: 'answer', 'source', and 'reasoning'
-    """
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=api_key)
-
-    retriever=vectorstore.as_retriever(search_type="similarity")
-
-    prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
 
     rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt_template
-            | llm.with_structured_output(ExtractedInfoWithSources)
-        )
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt_template
+        | llm.with_structured_output(SearchResult)
+    )
 
-    structured_response = rag_chain.invoke(query)
-    df = pd.DataFrame([structured_response.dict()])
+    result = rag_chain.invoke(query)
+    return result
 
-    # Transforming into a table with two rows: 'answer' and 'source'
-    answer_row = []
-    source_row = []
-    reasoning_row = []
+def get_tables_for_file(file_name, user_id=None):
+    session = get_db_session()
+    try:
+        # We don't always have user_id if we didn't store it yet
+        query = session.query(TableData).filter_by(file_name=file_name)
+        if user_id:
+            query = query.filter_by(user_id=user_id)
+        
+        tables = query.all()
+        # Convert to DataFrame for compatibility with existing UI
+        data = []
+        for t in tables:
+            data.append({
+                "page": t.page,
+                "caption": t.caption,
+                "data_json": json.dumps(t.data_json)
+            })
+        return pd.DataFrame(data)
+    finally:
+        session.close()
 
-    for col in df.columns:
-        answer_row.append(df[col][0]['answer'])
-        source_row.append(df[col][0]['sources'])
-        reasoning_row.append(df[col][0]['reasoning'])
+def save_chat(chat_history, file_name, user_id, chat_id=None, processed_data=None, pdf_bytes=None):
+    """Saves a chat history and session context to PostgreSQL."""
+    session = get_db_session()
+    try:
+        if not chat_id:
+            chat_id = str(uuid.uuid4())
+        
+        # Simple title generation
+        title = "New Chat"
+        for msg in chat_history:
+            if msg["role"] == "user":
+                title = msg["content"][:30] + "..." if len(msg["content"]) > 30 else msg["content"]
+                break
 
-    # Create new dataframe with two rows: 'answer' and 'source'
-    structured_response_df = pd.DataFrame([answer_row, source_row, reasoning_row], columns=df.columns, index=['answer', 'source', 'reasoning'])
-  
-    return structured_response_df.T
+        pdf_b64 = None
+        if pdf_bytes:
+            import base64
+            pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+        chat_obj = session.query(Chat).filter_by(id=chat_id).first()
+        if chat_obj:
+            chat_obj.title = title
+            chat_obj.history = chat_history
+            chat_obj.processed_data = processed_data
+            chat_obj.pdf_b64 = pdf_b64
+            chat_obj.timestamp = datetime.datetime.utcnow()
+        else:
+            new_chat = Chat(
+                id=chat_id,
+                user_id=user_id,
+                title=title,
+                file_name=file_name,
+                history=chat_history,
+                processed_data=processed_data,
+                pdf_b64=pdf_b64
+            )
+            session.add(new_chat)
+        
+        session.commit()
+        return chat_id
+    except Exception as e:
+        session.rollback()
+        print(f"Error saving chat to PG: {e}")
+        return chat_id
+    finally:
+        session.close()
+
+def get_all_chats(user_id):
+    """Retrieves all saved chat metadata for a user from PostgreSQL."""
+    session = get_db_session()
+    try:
+        chats = session.query(Chat).filter_by(user_id=user_id).order_by(Chat.timestamp.desc()).all()
+        return [{
+            "chat_id": c.id,
+            "title": c.title,
+            "file_name": c.file_name,
+            "timestamp": c.timestamp.isoformat()
+        } for c in chats]
+    finally:
+        session.close()
+
+def load_chat(chat_id):
+    """Loads a specific chat session from PostgreSQL."""
+    session = get_db_session()
+    try:
+        chat = session.query(Chat).filter_by(id=chat_id).first()
+        if chat:
+            return {
+                "chat_id": chat.id,
+                "title": chat.title,
+                "file_name": chat.file_name,
+                "history": chat.history,
+                "processed_data": chat.processed_data,
+                "pdf_b64": chat.pdf_b64
+            }
+        return None
+    finally:
+        session.close()
+
+def delete_chat(chat_id):
+    """Deletes a chat session from PostgreSQL."""
+    session = get_db_session()
+    try:
+        chat = session.query(Chat).filter_by(id=chat_id).first()
+        if chat:
+            session.delete(chat)
+            session.commit()
+            return True
+        return False
+    finally:
+        session.close()

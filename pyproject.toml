@@ -11,6 +11,7 @@ dependencies = [
     "langchain>=0.3.0",
     "langchain-core>=0.3.13",
     "langchain-community>=0.3.0",
+    "langchain-chroma>=1.1.0",
     "langchain-google-genai>=2.0.0",
     # --- Google Generative AI ---
     "google-generativeai==0.8.5",
@@ -26,4 +27,12 @@ dependencies = [
     # --- Optional ---
     "langchain-text-splitters>=0.0.1",
     "dotenv>=0.9.9",
+    "pdfplumber>=0.11.8",
+    "pdf2image>=1.17.0",
+    "pillow>=12.0.0",
+    "pytesseract>=0.3.13",
+    "google-cloud-vision>=3.11.0",
+    "sqlalchemy>=2.0.44",
+    "psycopg2-binary>=2.9.11",
+    "bcrypt>=5.0.0",
 ]

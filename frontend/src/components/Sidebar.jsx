@@ -104,9 +104,9 @@ const Sidebar = ({
                             style={{ padding: '0.5rem', fontSize: '0.8rem', background: 'rgba(0,0,0,0.2)' }}
                             title={collapsed ? "Selected Model" : ""}
                         >
-                            <option value="gemini-2.0-flash">G 2.0</option>
-                            <option value="gemini-2.5-flash">G 2.5</option>
-                            <option value="gemini-flash-latest">G 1.5</option>
+                            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                            <option value="gemini-flash-latest">Gemini 1.5 Flash</option>
                         </select>
                     </div>
                     {!collapsed && (

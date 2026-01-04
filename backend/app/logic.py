@@ -18,6 +18,7 @@ import bcrypt
 from sqlalchemy import create_engine, Column, String, Integer, JSON, ForeignKey, DateTime, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from google.api_core import exceptions as google_exceptions
 import datetime
 
 # Global configuration
@@ -106,6 +107,14 @@ def verify_user(username, password):
     finally:
         session.close()
 
+def verify_user_by_username(username):
+    session = get_db_session()
+    try:
+        user = session.query(User).filter_by(username=username).first()
+        return user
+    finally:
+        session.close()
+
 def clean_filename(filename):
     """
     Strictly follows ChromaDB collection name rules:
@@ -152,16 +161,17 @@ def _safe_json_load(text):
 
 import pdfplumber
 
-def intelligent_pdf_parse(uploaded_file, api_key):
+def intelligent_pdf_parse(uploaded_file, api_key, model_name=None):
     """
     Optimized Hybrid Parse:
     1. Extracts raw text locally (fast).
     2. Uses Gemini only for complex structure (TOC, Tables, Media).
     3. Handles OCR automatically if local extraction fails.
     """
+    target_model = model_name or GEMINI_MODEL_NAME
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        GEMINI_MODEL_NAME,
+        target_model,
         generation_config={"response_mime_type": "application/json"}
     )
     file_bytes = uploaded_file.getvalue()
@@ -239,8 +249,10 @@ def intelligent_pdf_parse(uploaded_file, api_key):
             "tables": gemini_data.get("tables", []),
             "media": gemini_data.get("media", [])
         }
+    except google_exceptions.ResourceExhausted:
+        return {"error": "API Quota Exceeded (429). Please wait a minute before trying again or check your Gemini API plan."}
     except Exception as e:
-        return {"error": f"Speed optimization failed: {str(e)}", "raw": response.text}
+        return {"error": f"Speed optimization failed: {str(e)}", "raw": response.text if 'response' in locals() else ""}
 
 def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db"):
     """
@@ -334,9 +346,10 @@ class SearchResult(BaseModel):
     context_used: str = Field(description="Snippet of the context that specifically supports the answer.")
     reasoning: str = Field(description="Logic used to arrive at the answer.")
 
-def query_pdf(vectorstore, query, api_key):
+def query_pdf(vectorstore, query, api_key, model_name=None):
     """General RAG query against the vector store."""
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL_NAME, google_api_key=api_key)
+    target_model = model_name or GEMINI_MODEL_NAME
+    llm = ChatGoogleGenerativeAI(model=target_model, google_api_key=api_key)
     
     retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 5})
     
@@ -360,8 +373,16 @@ def query_pdf(vectorstore, query, api_key):
         | llm.with_structured_output(SearchResult)
     )
 
-    result = rag_chain.invoke(query)
-    return result
+    try:
+        result = rag_chain.invoke(query)
+        return result
+    except google_exceptions.ResourceExhausted:
+        # Return a SearchResult object with the error message
+        return SearchResult(
+            answer="I'm sorry, but the AI API quota has been exceeded. Please wait a moment and try again.",
+            reasoning="The server received a 429 Resource Exhausted error from the Gemini API.",
+            context_used="N/A"
+        )
 
 def get_tables_for_file(file_name, user_id=None):
     session = get_db_session()
@@ -408,7 +429,8 @@ def save_chat(chat_history, file_name, user_id, chat_id=None, processed_data=Non
             chat_obj.title = title
             chat_obj.history = chat_history
             chat_obj.processed_data = processed_data
-            chat_obj.pdf_b64 = pdf_b64
+            if pdf_b64:
+                chat_obj.pdf_b64 = pdf_b64
             chat_obj.timestamp = datetime.datetime.utcnow()
         else:
             new_chat = Chat(
@@ -453,6 +475,7 @@ def load_chat(chat_id):
         if chat:
             return {
                 "chat_id": chat.id,
+                "user_id": chat.user_id,
                 "title": chat.title,
                 "file_name": chat.file_name,
                 "history": chat.history,

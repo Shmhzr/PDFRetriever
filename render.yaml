@@ -3,7 +3,7 @@ services:
     name: pdf-retriever-pro
     runtime: docker
     plan: free
-    healthCheckPath: /_stcore/health
+    healthCheckPath: /health
     envVars:
       - key: GOOGLE_API_KEY
         sync: false # Set this in the Render dashboard

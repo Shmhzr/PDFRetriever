@@ -1,3 +1,13 @@
+# --- Build Stage (Node) ---
+FROM node:20-slim AS build-stage
+
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# --- Final Stage (Python) ---
 FROM python:3.12-slim
 
 # Set environment variables
@@ -16,20 +26,20 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install uv for fast dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install python dependencies
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
+# Copy backend
+COPY backend ./backend
 
-# Install dependencies
-RUN uv sync --frozen --no-cache
-
-# Copy application code
-COPY . .
+# Copy built frontend from build-stage
+COPY --from=build-stage /app/frontend/dist ./frontend/dist
 
 # Create directory for local DB
 RUN mkdir -p db
 
-# Command to run the application (Render provides $PORT)
-CMD uv run streamlit run app/streamlit_app.py --server.port $PORT --server.address 0.0.0.0
+WORKDIR /app/backend
+
+# Command to run the application
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT

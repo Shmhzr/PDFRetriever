@@ -115,9 +115,11 @@ const MainArea = ({
         <main className="main-content">
             <header className="app-header">
                 <div>
-                    <h2 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                        {currentChatId ? `Analyzing: ${processedData?.file_name || 'Document'}` : 'Get Started'}
-                    </h2>
+                    {currentChatId && (
+                        <h2 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            Analyzing: {processedData?.file_name || 'Document'}
+                        </h2>
+                    )}
                 </div>
                 {processedData && (
                     <div style={{ display: 'flex', gap: '1rem' }}>

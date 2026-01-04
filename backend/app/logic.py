@@ -15,69 +15,90 @@ from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel, Field
 import re
 import bcrypt
-from sqlalchemy import create_engine, Column, String, Integer, JSON, ForeignKey, DateTime, Text
+from sqlalchemy import (
+    create_engine,
+    Column,
+    String,
+    Integer,
+    JSON,
+    ForeignKey,
+    DateTime,
+    Text,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from google.api_core import exceptions as google_exceptions
 import datetime
 
 # Global configuration
-GEMINI_MODEL_NAME = "gemini-2.0-flash" 
+GEMINI_MODEL_NAME = "gemini-2.0-flash"
 
 # --- PostgreSQL Setup ---
 Base = declarative_base()
 
+
 class User(Base):
-    __tablename__ = 'users'
+    __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     username = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
 
+
 class Chat(Base):
-    __tablename__ = 'chats'
+    __tablename__ = "chats"
     id = Column(String(255), primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(255))
     file_name = Column(String(255))
-    history = Column(JSON) # Stores chat history as JSONB
-    processed_data = Column(JSON) # Stores parsed doc structure
-    pdf_b64 = Column(Text) # Optional: Store B64 of PDF for restoration
+    history = Column(JSON)  # Stores chat history as JSONB
+    processed_data = Column(JSON)  # Stores parsed doc structure
+    pdf_b64 = Column(Text)  # Optional: Store B64 of PDF for restoration
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
+
 class TableData(Base):
-    __tablename__ = 'extracted_tables'
+    __tablename__ = "extracted_tables"
     id = Column(String(255), primary_key=True)
     file_name = Column(String(255))
-    user_id = Column(Integer, ForeignKey('users.id'))
+    user_id = Column(Integer, ForeignKey("users.id"))
     page = Column(Integer)
     caption = Column(String(512))
     data_json = Column(JSON)
 
+
 def get_db_engine():
-    pg_host = os.getenv("PGHOST")
-    
-    if pg_host:
+    # Priority 1: DATABASE_URL (Neon, Railway, Supabase, etc.)
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        db_url = database_url
+    # Priority 2: Individual PG* env vars (Render's method)
+    elif os.getenv("PGHOST"):
         pg_port = os.getenv("PGPORT", "5432")
         pg_db = os.getenv("PGDATABASE", "pdf_retriever")
         pg_user = os.getenv("PGUSER", "postgres")
         pg_pass = os.getenv("PGPASSWORD", "your_password")
-        db_url = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+        db_url = (
+            f"postgresql://{pg_user}:{pg_pass}@{os.getenv('PGHOST')}:{pg_port}/{pg_db}"
+        )
+    # Fallback: SQLite for local development
     else:
-        # Fallback to local SQLite for easier project submission
         db_path = Path("db") / "intel_unnati.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         db_url = f"sqlite:///{db_path}"
-    
+
     return create_engine(db_url)
+
 
 def init_db():
     engine = get_db_engine()
     Base.metadata.create_all(engine)
 
+
 def get_db_session():
     engine = get_db_engine()
     Session = sessionmaker(bind=engine)
     return Session()
+
 
 # --- Authentication Logic ---
 def register_user(username, password):
@@ -85,8 +106,10 @@ def register_user(username, password):
     try:
         if session.query(User).filter_by(username=username).first():
             return False, "User already exists"
-        
-        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode(
+            "utf-8"
+        )
         new_user = User(username=username, password_hash=hashed)
         session.add(new_user)
         session.commit()
@@ -97,15 +120,19 @@ def register_user(username, password):
     finally:
         session.close()
 
+
 def verify_user(username, password):
     session = get_db_session()
     try:
         user = session.query(User).filter_by(username=username).first()
-        if user and bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
+        if user and bcrypt.checkpw(
+            password.encode("utf-8"), user.password_hash.encode("utf-8")
+        ):
             return user
         return None
     finally:
         session.close()
+
 
 def verify_user_by_username(username):
     session = get_db_session()
@@ -115,6 +142,7 @@ def verify_user_by_username(username):
     finally:
         session.close()
 
+
 def clean_filename(filename):
     """
     Strictly follows ChromaDB collection name rules:
@@ -123,21 +151,24 @@ def clean_filename(filename):
     - Starts and ends with [a-zA-Z0-9].
     """
     import re
+
     # Replace any character not in [a-zA-Z0-9._-] with an underscore
-    cleaned = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
     # Ensure it starts and ends with alphanumeric
-    cleaned = re.sub(r'^[^a-zA-Z0-9]+', '', cleaned)
-    cleaned = re.sub(r'[^a-zA-Z0-9]+$', '', cleaned)
-    
+    cleaned = re.sub(r"^[^a-zA-Z0-9]+", "", cleaned)
+    cleaned = re.sub(r"[^a-zA-Z0-9]+$", "", cleaned)
+
     # Handle length constraints
     if len(cleaned) < 3:
         cleaned = f"col_{cleaned}" if cleaned else "default_collection"
-    
+
     return cleaned[:512]
+
 
 def get_gemini_client(api_key):
     genai.configure(api_key=api_key)
     return genai.GenerativeModel(GEMINI_MODEL_NAME)
+
 
 def _safe_json_load(text):
     """Robustly extract and load JSON from a string."""
@@ -146,20 +177,22 @@ def _safe_json_load(text):
         return json.loads(text)
     except json.JSONDecodeError:
         # Try to find JSON block
-        match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+        match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
         if match:
             try:
                 return json.loads(match.group(1))
             except:
                 pass
         # Remove markdown code blocks
-        clean_text = re.sub(r'```json\s*|\s*```', '', text)
+        clean_text = re.sub(r"```json\s*|\s*```", "", text)
         try:
             return json.loads(clean_text)
         except:
             raise ValueError("Could not parse JSON from Gemini response.")
 
+
 import pdfplumber
+
 
 def intelligent_pdf_parse(uploaded_file, api_key, model_name=None):
     """
@@ -171,11 +204,10 @@ def intelligent_pdf_parse(uploaded_file, api_key, model_name=None):
     target_model = model_name or GEMINI_MODEL_NAME
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        target_model,
-        generation_config={"response_mime_type": "application/json"}
+        target_model, generation_config={"response_mime_type": "application/json"}
     )
     file_bytes = uploaded_file.getvalue()
-    
+
     # Fast local analysis with pdfplumber
     local_pages = []
     is_scanned = True
@@ -193,12 +225,14 @@ def intelligent_pdf_parse(uploaded_file, api_key, model_name=None):
     # If selectable, we don't ask for full content to save time.
     # If scanned, we MUST ask for content as part of OCR.
     schema = {
-      "toc": [ { "title": "string", "page_number": "integer" } ],
-      "section_definitions": [ { "title": "string", "page_start": "integer", "page_end": "integer" } ],
-      "tables": [ { "caption": "string", "cells": [["string"]], "page": "integer" } ],
-      "media": [ { "description": "string", "page": "integer" } ]
+        "toc": [{"title": "string", "page_number": "integer"}],
+        "section_definitions": [
+            {"title": "string", "page_start": "integer", "page_end": "integer"}
+        ],
+        "tables": [{"caption": "string", "cells": [["string"]], "page": "integer"}],
+        "media": [{"description": "string", "page": "integer"}],
     }
-    
+
     if is_scanned:
         schema["section_definitions"][0]["content"] = "string (full OCR text)"
 
@@ -216,43 +250,52 @@ def intelligent_pdf_parse(uploaded_file, api_key, model_name=None):
     Return ONLY raw JSON.
     """
 
-    response = model.generate_content([
-        prompt,
-        {"mime_type": "application/pdf", "data": file_bytes}
-    ])
-    
+    response = model.generate_content(
+        [prompt, {"mime_type": "application/pdf", "data": file_bytes}]
+    )
+
     try:
         gemini_data = _safe_json_load(response.text)
-        
+
         sections = []
         for defn in gemini_data.get("section_definitions", []):
             start = defn.get("page_start", 1)
             end = defn.get("page_end", start)
-            
+
             if is_scanned:
                 # Use OCR text from Gemini
                 content = defn.get("content", "[OCR Failed]")
             else:
                 # Use local text
-                content_parts = [p["text"] for p in local_pages if start <= p["page"] <= end]
+                content_parts = [
+                    p["text"] for p in local_pages if start <= p["page"] <= end
+                ]
                 content = "\n".join(content_parts)
-            
-            sections.append({
-                "title": defn["title"],
-                "content": content,
-                "page_range": f"{start}-{end}"
-            })
-        
+
+            sections.append(
+                {
+                    "title": defn["title"],
+                    "content": content,
+                    "page_range": f"{start}-{end}",
+                }
+            )
+
         return {
             "toc": gemini_data.get("toc", []),
             "sections": sections,
             "tables": gemini_data.get("tables", []),
-            "media": gemini_data.get("media", [])
+            "media": gemini_data.get("media", []),
         }
     except google_exceptions.ResourceExhausted:
-        return {"error": "API Quota Exceeded (429). Please wait a minute before trying again or check your Gemini API plan."}
+        return {
+            "error": "API Quota Exceeded (429). Please wait a minute before trying again or check your Gemini API plan."
+        }
     except Exception as e:
-        return {"error": f"Speed optimization failed: {str(e)}", "raw": response.text if 'response' in locals() else ""}
+        return {
+            "error": f"Speed optimization failed: {str(e)}",
+            "raw": response.text if "response" in locals() else "",
+        }
+
 
 def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db"):
     """
@@ -260,12 +303,14 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
     """
     base_path = Path(db_root)
     base_path.mkdir(parents=True, exist_ok=True)
-    
+
     clean_name = clean_filename(file_name)
-    
+
     # 1. Store Text Sections and Media Descriptions in Chroma
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
-    
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004", google_api_key=api_key
+    )
+
     documents = []
     # Add sections
     for section in parsed_data.get("sections", []):
@@ -276,11 +321,11 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
                     "source": file_name,
                     "type": "section",
                     "title": section.get("title", ""),
-                    "page_range": str(section.get("page_range", ""))
-                }
+                    "page_range": str(section.get("page_range", "")),
+                },
             )
             documents.append(doc)
-    
+
     # Add media descriptions
     for item in parsed_data.get("media", []):
         doc = Document(
@@ -288,8 +333,8 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
             metadata={
                 "source": file_name,
                 "type": "media",
-                "page": item.get("page", "")
-            }
+                "page": item.get("page", ""),
+            },
         )
         documents.append(doc)
 
@@ -298,7 +343,7 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
             documents=documents,
             embedding=embeddings,
             collection_name=clean_name,
-            persist_directory=str(base_path / "vectorstore")
+            persist_directory=str(base_path / "vectorstore"),
         )
     else:
         vectorstore = None
@@ -315,7 +360,7 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
                 user_id=user_id,
                 page=table.get("page"),
                 caption=table.get("caption"),
-                data_json=data
+                data_json=data,
             )
             session.add(new_table)
         session.commit()
@@ -327,8 +372,12 @@ def store_parsed_data(parsed_data, file_name, api_key, user_id=None, db_root="db
 
     return vectorstore, "postgresql"
 
+
 def get_embedding_function(api_key):
-    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=api_key)
+    return GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004", google_api_key=api_key
+    )
+
 
 def load_vectorstore(file_name, api_key, db_root="db"):
     base_path = Path(db_root)
@@ -337,23 +386,32 @@ def load_vectorstore(file_name, api_key, db_root="db"):
     return Chroma(
         persist_directory=str(base_path / "vectorstore"),
         embedding_function=embedding_function,
-        collection_name=clean_name
+        collection_name=clean_name,
     )
+
 
 # Structured response models for searching
 class SearchResult(BaseModel):
-    answer: str = Field(description="Direct answer to the user query based on the context.")
-    context_used: str = Field(description="Snippet of the context that specifically supports the answer.")
+    answer: str = Field(
+        description="Direct answer to the user query based on the context."
+    )
+    context_used: str = Field(
+        description="Snippet of the context that specifically supports the answer."
+    )
     reasoning: str = Field(description="Logic used to arrive at the answer.")
+
 
 def query_pdf(vectorstore, query, api_key, model_name=None):
     """General RAG query against the vector store."""
     target_model = model_name or GEMINI_MODEL_NAME
     llm = ChatGoogleGenerativeAI(model=target_model, google_api_key=api_key)
-    
-    retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 5})
-    
-    prompt_template = ChatPromptTemplate.from_template("""
+
+    retriever = vectorstore.as_retriever(
+        search_type="similarity", search_kwargs={"k": 5}
+    )
+
+    prompt_template = ChatPromptTemplate.from_template(
+        """
     You are a helpful document assistant. Use the following context to answer the question.
     If the context doesn't contain the answer, say you don't know based on the provided text.
     
@@ -362,7 +420,8 @@ def query_pdf(vectorstore, query, api_key, model_name=None):
     Question: {question}
     
     Answer clearly and concisely.
-    """)
+    """
+    )
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
@@ -381,8 +440,9 @@ def query_pdf(vectorstore, query, api_key, model_name=None):
         return SearchResult(
             answer="I'm sorry, but the AI API quota has been exceeded. Please wait a moment and try again.",
             reasoning="The server received a 429 Resource Exhausted error from the Gemini API.",
-            context_used="N/A"
+            context_used="N/A",
         )
+
 
 def get_tables_for_file(file_name, user_id=None):
     session = get_db_session()
@@ -391,38 +451,48 @@ def get_tables_for_file(file_name, user_id=None):
         query = session.query(TableData).filter_by(file_name=file_name)
         if user_id:
             query = query.filter_by(user_id=user_id)
-        
+
         tables = query.all()
         # Convert to DataFrame for compatibility with existing UI
         data = []
         for t in tables:
-            data.append({
-                "page": t.page,
-                "caption": t.caption,
-                "data_json": json.dumps(t.data_json)
-            })
+            data.append(
+                {
+                    "page": t.page,
+                    "caption": t.caption,
+                    "data_json": json.dumps(t.data_json),
+                }
+            )
         return pd.DataFrame(data)
     finally:
         session.close()
 
-def save_chat(chat_history, file_name, user_id, chat_id=None, processed_data=None, pdf_bytes=None):
+
+def save_chat(
+    chat_history, file_name, user_id, chat_id=None, processed_data=None, pdf_bytes=None
+):
     """Saves a chat history and session context to PostgreSQL."""
     session = get_db_session()
     try:
         if not chat_id:
             chat_id = str(uuid.uuid4())
-        
+
         # Simple title generation
         title = "New Chat"
         for msg in chat_history:
             if msg["role"] == "user":
-                title = msg["content"][:30] + "..." if len(msg["content"]) > 30 else msg["content"]
+                title = (
+                    msg["content"][:30] + "..."
+                    if len(msg["content"]) > 30
+                    else msg["content"]
+                )
                 break
 
         pdf_b64 = None
         if pdf_bytes:
             import base64
-            pdf_b64 = base64.b64encode(pdf_bytes).decode('utf-8')
+
+            pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
         chat_obj = session.query(Chat).filter_by(id=chat_id).first()
         if chat_obj:
@@ -440,10 +510,10 @@ def save_chat(chat_history, file_name, user_id, chat_id=None, processed_data=Non
                 file_name=file_name,
                 history=chat_history,
                 processed_data=processed_data,
-                pdf_b64=pdf_b64
+                pdf_b64=pdf_b64,
             )
             session.add(new_chat)
-        
+
         session.commit()
         return chat_id
     except Exception as e:
@@ -453,19 +523,29 @@ def save_chat(chat_history, file_name, user_id, chat_id=None, processed_data=Non
     finally:
         session.close()
 
+
 def get_all_chats(user_id):
     """Retrieves all saved chat metadata for a user from PostgreSQL."""
     session = get_db_session()
     try:
-        chats = session.query(Chat).filter_by(user_id=user_id).order_by(Chat.timestamp.desc()).all()
-        return [{
-            "chat_id": c.id,
-            "title": c.title,
-            "file_name": c.file_name,
-            "timestamp": c.timestamp.isoformat()
-        } for c in chats]
+        chats = (
+            session.query(Chat)
+            .filter_by(user_id=user_id)
+            .order_by(Chat.timestamp.desc())
+            .all()
+        )
+        return [
+            {
+                "chat_id": c.id,
+                "title": c.title,
+                "file_name": c.file_name,
+                "timestamp": c.timestamp.isoformat(),
+            }
+            for c in chats
+        ]
     finally:
         session.close()
+
 
 def load_chat(chat_id):
     """Loads a specific chat session from PostgreSQL."""
@@ -480,11 +560,12 @@ def load_chat(chat_id):
                 "file_name": chat.file_name,
                 "history": chat.history,
                 "processed_data": chat.processed_data,
-                "pdf_b64": chat.pdf_b64
+                "pdf_b64": chat.pdf_b64,
             }
         return None
     finally:
         session.close()
+
 
 def delete_chat(chat_id):
     """Deletes a chat session from PostgreSQL."""

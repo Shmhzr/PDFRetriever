@@ -7,27 +7,10 @@ services:
     envVars:
       - key: GOOGLE_API_KEY
         sync: false # Set this in the Render dashboard
-      - key: PGHOST
-        fromDatabase:
-          name: pdf-retriever-db
-          property: host
-      - key: PGPORT
-        fromDatabase:
-          name: pdf-retriever-db
-          property: port
-      - key: PGDATABASE
-        fromDatabase:
-          name: pdf-retriever-db
-          property: database
-      - key: PGUSER
-        fromDatabase:
-          name: pdf-retriever-db
-          property: user
-      - key: PGPASSWORD
-        fromDatabase:
-          name: pdf-retriever-db
-          property: password
+      - key: DATABASE_URL
+        sync: false # Set this in the Render dashboard with your Neon/Railway/Supabase connection string
 
-databases:
-  - name: pdf-retriever-db
-    plan: free
+# Note: If you want to use Render's PostgreSQL in the future, add this:
+# databases:
+#   - name: pdf-retriever-db
+#     plan: free

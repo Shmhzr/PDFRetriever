@@ -112,7 +112,7 @@ const MainArea = ({
     };
 
     return (
-        <main className="main-content">
+        <main className="main-content" style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
             <header className="app-header">
                 <div>
                     {currentChatId && (
@@ -131,7 +131,7 @@ const MainArea = ({
                 )}
             </header>
 
-            <div className="workspace-grid" style={{ position: 'relative' }}>
+            <div className="workspace-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 0, flex: 1, overflow: 'hidden', position: 'relative' }}>
                 <AnimatePresence>
                     {uploading && (
                         <motion.div
@@ -212,77 +212,89 @@ const MainArea = ({
                     )}
                 </AnimatePresence>
 
-                <div className="document-section" style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '2rem', overflowY: 'auto' }}>
-                    {processedData ? (
-                        <>
-                            <div className="pdf-container" style={{ height: '500px', flexShrink: 0 }}>
+                {/* Left Panel - PDF Viewer */}
+                {processedData ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-color)', overflow: 'hidden' }}>
+                        <div style={{ padding: '1rem', borderBottom: '1px solid var(--border-color)', background: 'rgba(0,0,0,0.3)' }}>
+                            <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '0.85rem', fontWeight: 700 }}>Document</h3>
+                        </div>
+                        <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
+                            <div className="pdf-container" style={{ height: '100%', position: 'relative' }}>
                                 <PDFViewer url={pdfUrl} toc={processedData.toc} />
                             </div>
+                        </div>
+                    </div>
+                ) : (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexDirection: 'column',
+                            gap: '2rem',
+                            padding: '2rem',
+                            borderRight: '1px solid var(--border-color)'
+                        }}
+                    >
+                        <div className="glass-card" style={{
+                            width: '80px',
+                            height: '80px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            borderRadius: '24px',
+                            color: 'var(--accent-color)'
+                        }}>
+                            <CloudUpload size={40} />
+                        </div>
+
+                        <div style={{ textAlign: 'center' }}>
+                            <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '0.5rem' }}>
+                                Upload a PDF
+                            </h2>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                Start by selecting a document to analyze
+                            </p>
+                        </div>
+
+                        <label className="btn-primary" style={{ cursor: 'pointer', padding: '1rem 2rem', fontSize: '1rem', width: 'auto', borderRadius: '12px' }} title="Choose a PDF file to analyze. Max 10MB recommended.">
+                            <CloudUpload size={18} /> Select Document
+                            <input type="file" onChange={handleFileUpload} accept="application/pdf" hidden />
+                        </label>
+                    </motion.div>
+                )}
+
+                {/* Center Panel - Chat */}
+                <div style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border-color)', overflow: 'hidden', background: 'rgba(0,0,0,0.2)' }}>
+                    <div style={{ padding: '1rem', borderBottom: '1px solid var(--border-color)', background: 'rgba(0,0,0,0.3)' }}>
+                        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 700 }}>Conversation</h3>
+                    </div>
+                    <div style={{ flex: 1, overflow: 'auto', padding: '1rem' }}>
+                        {processedData ? (
                             <ChatInterface
                                 token={token}
                                 apiKey={apiKey}
                                 model={selectedModel}
                                 chatId={currentChatId}
                             />
-                        </>
-                    ) : (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            style={{
-                                flex: 1,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                flexDirection: 'column',
-                                gap: '2rem',
-                                maxWidth: '500px',
-                                margin: '4rem auto'
-                            }}
-                        >
-                            <div className="glass-card" style={{
-                                width: '100px',
-                                height: '100px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                borderRadius: '24px',
-                                color: 'var(--accent-color)'
-                            }}>
-                                <CloudUpload size={48} />
+                        ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.3 }}>
+                                <p style={{ fontSize: '0.9rem', textAlign: 'center' }}>Upload a document to start chatting</p>
                             </div>
-
-                            <div style={{ textAlign: 'center', marginBottom: '1rem' }}>
-                                <h1 style={{ fontSize: '2.5rem', fontWeight: 800, letterSpacing: '-1.5px', marginBottom: '0.75rem', background: 'linear-gradient(to bottom, #fff, #a1a1aa)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                                    Knowledge at your fingertips
-                                </h1>
-                                <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', lineHeight: '1.6', maxWidth: '600px', margin: '0 auto' }}>
-                                    Upload any PDF to instantly query, extract tables, and surface deep visual insights with Gemini's multi-modal intelligence.
-                                </p>
-                            </div>
-
-                            <label className="btn-primary" style={{ cursor: 'pointer', padding: '1.25rem 2.5rem', fontSize: '1.1rem', width: 'auto', borderRadius: '16px', boxShadow: '0 10px 25px rgba(59, 130, 246, 0.2)' }} title="Choose a PDF file to analyze. Max 10MB recommended.">
-                                <CloudUpload size={24} /> Select Document to Index
-                                <input type="file" onChange={handleFileUpload} accept="application/pdf" hidden />
-                            </label>
-
-                            <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', opacity: 0.5 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Analyzes document layout and text structure">
-                                    <CheckCircle2 size={14} className="accent" /> Full Layout OCR
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Identifies and extracts tabular data">
-                                    <CheckCircle2 size={14} className="accent" /> Table Extraction
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Answer questions about images and visual elements">
-                                    <CheckCircle2 size={14} className="accent" /> Visual QA
-                                </div>
-                            </div>
-                        </motion.div>
-                    )}
+                        )}
+                    </div>
                 </div>
 
-                <div className="analysis-section glass-panel" style={{ border: 'none', borderRadius: 0, borderLeft: '1px solid var(--border-color)' }}>
-                    <AnalysisPanel data={processedData} fileName={processedData?.file_name} />
+                {/* Right Panel - Analysis */}
+                <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'rgba(0,0,0,0.3)' }}>
+                    <div style={{ padding: '1rem', borderBottom: '1px solid var(--border-color)', background: 'rgba(0,0,0,0.3)' }}>
+                        <h3 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 700 }}>Analysis</h3>
+                    </div>
+                    <div style={{ flex: 1, overflow: 'auto' }}>
+                        <AnalysisPanel data={processedData} fileName={processedData?.file_name} />
+                    </div>
                 </div>
             </div>
         </main>

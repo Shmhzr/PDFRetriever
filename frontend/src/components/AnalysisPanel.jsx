@@ -28,8 +28,10 @@ const AnalysisPanel = ({ data, fileName }) => {
                             border: 'none',
                             background: 'transparent',
                             color: activeTab === 'results' ? 'var(--accent-color)' : 'var(--text-secondary)',
-                            transition: 'all 0.2s'
+                            transition: 'all 0.2s',
+                            cursor: 'pointer'
                         }}
+                        title="View extracted tables and structured data from your PDF"
                     >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <FileSpreadsheet size={16} /> Results
@@ -53,8 +55,10 @@ const AnalysisPanel = ({ data, fileName }) => {
                             border: 'none',
                             background: 'transparent',
                             color: activeTab === 'insights' ? 'var(--accent-color)' : 'var(--text-secondary)',
-                            transition: 'all 0.2s'
+                            transition: 'all 0.2s',
+                            cursor: 'pointer'
                         }}
+                        title="View AI-generated insights, summaries, and key findings"
                     >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <Lightbulb size={16} /> Insights

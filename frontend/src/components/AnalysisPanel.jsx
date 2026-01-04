@@ -69,7 +69,7 @@ const AnalysisPanel = ({ data, fileName }) => {
                 </div>
             </div>
 
-            <div className="tab-content scrollable" style={{ flex: 1, overflowY: 'auto', padding: '1.5rem' }}>
+            <div className="tab-content scrollable" style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', minHeight: 0 }}>
                 <AnimatePresence mode="wait">
                     <motion.div
                         key={activeTab}
@@ -77,6 +77,7 @@ const AnalysisPanel = ({ data, fileName }) => {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -10 }}
                         transition={{ duration: 0.2 }}
+                        style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}
                     >
                         {activeTab === 'results' ? (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>

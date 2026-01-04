@@ -14,43 +14,6 @@ const AppContent = () => {
   const [processedData, setProcessedData] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  useEffect(() => {
-    if (token) {
-      fetchUser();
-      fetchChats();
-    }
-  }, [token]);
-
-  const fetchUser = async () => {
-    try {
-      const res = await fetch('/api/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data);
-      } else {
-        logout();
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchChats = async () => {
-    try {
-      const res = await fetch('/api/chats', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setChats(data);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   const logout = () => {
     localStorage.removeItem('token');
     setToken(null);
@@ -59,6 +22,43 @@ const AppContent = () => {
     setCurrentChatId(null);
     setProcessedData(null);
   };
+
+  useEffect(() => {
+    if (!token) return;
+
+    const fetchUser = async () => {
+      try {
+        const res = await fetch('/api/me', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data);
+        } else {
+          logout();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const fetchChats = async () => {
+      try {
+        const res = await fetch('/api/chats', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setChats(data);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    fetchUser();
+    fetchChats();
+  }, [token]);
 
   const handleLogin = (newToken) => {
     localStorage.setItem('token', newToken);
@@ -72,6 +72,7 @@ const AppContent = () => {
   return (
     <div className="app-shell">
       <Sidebar
+        user={user}
         chats={chats}
         currentChatId={currentChatId}
         setCurrentChatId={setCurrentChatId}
@@ -95,7 +96,9 @@ const AppContent = () => {
         setCurrentChatId={setCurrentChatId}
         processedData={processedData}
         setProcessedData={setProcessedData}
-        onChatCreated={fetchChats}
+        onChatCreated={() => {
+          setToken(localStorage.getItem('token'));
+        }}
       />
     </div>
   );

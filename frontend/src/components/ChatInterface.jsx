@@ -101,7 +101,7 @@ const ChatInterface = ({ token, apiKey, model, chatId }) => {
                                 <div style={{ flex: 1 }}>
                                     <div style={{ fontSize: '0.9rem', whiteSpace: 'pre-wrap' }}>{msg.content}</div>
                                     {msg.reasoning && (
-                                        <details style={{ marginTop: '0.8rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                        <details style={{ marginTop: '0.8rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }} title="Click to view the AI's reasoning process">
                                             <summary style={{ cursor: 'pointer', opacity: 0.7, fontWeight: 600 }}>Deep Thinking</summary>
                                             <motion.div
                                                 initial={{ height: 0, opacity: 0 }}
@@ -145,8 +145,9 @@ const ChatInterface = ({ token, apiKey, model, chatId }) => {
                             handleSend();
                         }
                     }}
-                    placeholder="Ask a question about the PDF..."
+                    placeholder="Ask a question about the PDF... (Shift+Enter for new line)"
                     style={{ minHeight: '52px', maxHeight: '150px' }}
+                    title="Ask questions about your PDF. The AI will search and analyze the document to provide answers."
                 />
                 <button
                     id="send-btn"
@@ -155,8 +156,10 @@ const ChatInterface = ({ token, apiKey, model, chatId }) => {
                     style={{
                         opacity: !input.trim() ? 0.3 : 1,
                         transition: 'all 0.2s',
-                        background: loading ? 'transparent' : 'var(--accent-color)'
+                        background: loading ? 'transparent' : 'var(--accent-color)',
+                        cursor: loading ? 'wait' : 'pointer'
                     }}
+                    title="Send your question to Gemini for analysis"
                 >
                     {loading ? <Loader2 size={18} className="spin" /> : <Send size={18} />}
                 </button>

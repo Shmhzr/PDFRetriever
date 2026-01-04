@@ -123,7 +123,7 @@ const MainArea = ({
                 </div>
                 {processedData && (
                     <div style={{ display: 'flex', gap: '1rem' }}>
-                        <label className="btn-secondary" style={{ cursor: 'pointer', fontSize: '0.75rem', padding: '0.4rem 0.8rem' }}>
+                        <label className="btn-secondary" style={{ cursor: 'pointer', fontSize: '0.75rem', padding: '0.4rem 0.8rem' }} title="Upload another PDF to analyze in a new chat session">
                             <Plus size={14} /> New Index
                             <input type="file" onChange={handleFileUpload} accept="application/pdf" hidden />
                         </label>
@@ -261,19 +261,19 @@ const MainArea = ({
                                 </p>
                             </div>
 
-                            <label className="btn-primary" style={{ cursor: 'pointer', padding: '1.25rem 2.5rem', fontSize: '1.1rem', width: 'auto', borderRadius: '16px', boxShadow: '0 10px 25px rgba(59, 130, 246, 0.2)' }}>
+                            <label className="btn-primary" style={{ cursor: 'pointer', padding: '1.25rem 2.5rem', fontSize: '1.1rem', width: 'auto', borderRadius: '16px', boxShadow: '0 10px 25px rgba(59, 130, 246, 0.2)' }} title="Choose a PDF file to analyze. Max 10MB recommended.">
                                 <CloudUpload size={24} /> Select Document to Index
                                 <input type="file" onChange={handleFileUpload} accept="application/pdf" hidden />
                             </label>
 
                             <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', opacity: 0.5 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Analyzes document layout and text structure">
                                     <CheckCircle2 size={14} className="accent" /> Full Layout OCR
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Identifies and extracts tabular data">
                                     <CheckCircle2 size={14} className="accent" /> Table Extraction
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }} title="Answer questions about images and visual elements">
                                     <CheckCircle2 size={14} className="accent" /> Visual QA
                                 </div>
                             </div>
